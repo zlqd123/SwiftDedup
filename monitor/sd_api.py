@@ -860,7 +860,7 @@ function line(ev){
   const parts = [];
   if (ev.platform) parts.push(esc(ev.platform));
   if (ev.pid) parts.push('pid=' + esc(ev.pid));
-  if (ev.uid != null) parts.push('user=' + esc(ev.uid));
+  if (ev.uid != null) parts.push('user=' + esc(nickOf(ev.platform, ev.uid) || ev.uid));
   if (ev.sid != null) parts.push('sid=' + esc(ev.sid));
   if (ev.score != null) parts.push(Math.round(ev.score*100) + '%');
   if (ev.mode) parts.push('模式 ' + esc(MODE_CN2[ev.mode] || ev.mode));
@@ -876,12 +876,13 @@ function render(stick = true){
     const lv = ev.lv || KIND_LV[ev.kind] || 'INFO';
     if (!lvOn[lv]) return false;
     if (!k) return true;
-    const txt = (ev.msg || '') + ' ' + (ev.pid || '') + ' ' + (ev.platform || '') + ' ' + (KIND_CN[ev.kind] || '');
+    const txt = (ev.msg || '') + ' ' + (ev.pid || '') + ' ' + (ev.platform || '') + ' '
+    + (ev.text || '') + ' ' + (KIND_CN[ev.kind] || '');
     return txt.toLowerCase().includes(k);
   }).slice(-300);
-  $('#log').innerHTML = rows.map(line).join('');
+  $('#log').innerHTML = rows.slice().reverse().map(line).join('');
   const el = $('#log');
-  if (stick) el.scrollTop = el.scrollHeight;
+  if (stick) el.scrollTop = 0;
   $('#preset').textContent = `显示 ${el.childElementCount} / 总 ${total}`;
 }
 const es = new EventSource('/ui/sd/events');
@@ -893,7 +894,7 @@ es.onmessage = e => {
 
 // —— 轮询 /ui/sd/stats：总览 + 重要事件 + 聚合账号 ——
 let pollMs = 3000, pollTimer = null, nick = {};
-PLATFORMS.forEach(([p]) => nick[p] = {});
+const nickOf = (p, u) => ((nick[p] || {})[String(u)]) || '';
 function pollBtns(){
   return [1000,3000,5000,10000,0].map(ms =>
     '<span class="btn ' + (pollMs === ms ? 'on' : '') + '" data-ms="' + ms + '">' +
@@ -1047,7 +1048,7 @@ _DASHBOARD_HTML = '''<!DOCTYPE html>
   <div class="mute" style="margin-top:6px">同一昵称同时出现在两个平台时标注「同名跨平台」；改名写入对应平台 watchlist.json 的 nicknames（随时热载）。改名留空=删除缓存。</div></div>
  <div class="card"><h2>判重日志（近失段一并记录）</h2>
   <div style="max-height:320px;overflow-y:auto;border:1px solid #dfe3ea;border-radius:8px">
-  <table class="log" id="log"><thead><tr><th>时间</th><th>决定</th><th>平台</th><th>账号</th><th>帖子</th><th>详情</th></tr></thead>
+  <table class="log" id="log"><thead><tr><th>时间</th><th>决定</th><th>平台 · 账号</th><th>动态id</th><th>详情</th></tr></thead>
   <tbody></tbody></table></div>
   <button id="more-log" class="btn-min">加载更多</button>
   <button id="toggle-mode" class="warn">模式切换：影子(观察) ⇄ 执行(强制)</button></div>
@@ -1070,6 +1071,8 @@ function cntFmt(c){
 function modeOf(m){ return m; }
 let logOffset = 0;
 let lastMode = 'shadow';
+const NICKD = {};   // 平台 → {uid: 昵称}
+const nickOf = (p, u) => ((NICKD[p] || {})[String(u)]) || '';
 async function api(p, opt){const r=await fetch(p,opt);return r.json();}
 async function refresh(){
   const s = await api('/ui/sd/stats');
@@ -1081,7 +1084,7 @@ async function refresh(){
   document.getElementById('sources').innerHTML = s.sources.map(x=>{
     const accts = Object.entries(x.accounts||{}).map(([p,us])=>
       `<span class="tag ${p}">${platOf(p)}</span>`+us.map(u=>
-        `<span class="tag ${p}">${u}</span><button class="btn-min" onclick="unlink('${x.sid}','${p}','${u}',this)">×</button>`).join('')
+        `<span class="tag ${p}">${esc(nickOf(p,u) || u)}</span><button class="btn-min" onclick="unlink('${x.sid}','${p}','${u}',this)">×</button>`).join('')
     ).join(' ');
     return `<div style="margin:6px 0"><b>${x.sid3||x.sid}</b> ${x.name}
       <span class="mute">近3日发放：${cntFmt(x.counters||{})}</span><br>${accts}
@@ -1094,7 +1097,7 @@ async function refresh(){
     || '<div class="mute">尚未定义任何信源 — 到 sources.yaml 手动填写或下方新建</div>';
   document.getElementById('unclaimed').innerHTML =
     Object.entries(s.unclaimed||{}).map(([p,us])=> us.map(u=>
-      `<span class="tag ${p}">${platOf(p)}：${u.uid||u}</span>`).join(' ')).join('<br>')
+      `<span class="tag ${p}">${platOf(p)}：${esc(nickOf(p, u.uid||u) || u.uid||u)}<span class="dim">${esc(u.uid||u)}</span></span>`).join(' ')).join('<br>')
     || '<span class="mute">无</span>';
 }
 let SIDS = [];
@@ -1218,6 +1221,7 @@ document.getElementById('toggle-mode').onclick = async function(){
 };
 async function loadNicks(){
   const d = await api('/api/sd/nicknames');
+  Object.keys(d).filter(k => k !== 'cross').forEach(p => NICKD[p] = d[p]);
   const crossNames = new Set();
   Object.values(d.cross||{}).forEach(c=>crossNames.add(c.name));
   const mk = (plat, title) => {
@@ -1245,12 +1249,15 @@ loadNicks();
 
 async function loadLog(){
   const d = await api('/api/sd/log/dedup?limit='+(60+logOffset));
-  const rows = d.events.map(ev=>{
-    const who = ev.platform ? `${platOf(ev.platform)}/${ev.uid||''}` : '';
-    const what = ev.dup_of ? `→ ${platOf(ev.dup_of.platform)}:${ev.dup_of.pid} (${ev.aid||ev.dup_of.aid||'?'})` : (ev.aid?`聚合号 ${ev.aid}`:'');
+  const rows = d.events.slice().reverse().map(ev=>{
+    const who = ev.platform ? `${platOf(ev.platform)} <span class="dim">${esc(nickOf(ev.platform, ev.uid) || ev.uid || '')}</span>` : '';
+    const what = ev.dup_of ? `→ ${platOf(ev.dup_of.platform)}:${ev.dup_of.pid} (${esc(ev.aid||ev.dup_of.aid||'?')})` : (ev.aid?`聚合号 ${esc(ev.aid)}`:'');
+    const txt = ev.text ? `<div class="mute" style="white-space:normal">“${esc(ev.text)}”</div>` : '';
     return `<tr><td>${new Date((ev.time||0)*1000).toLocaleString()}</td><td>${KIND_CN_EV[ev.kind]||ev.kind||''}${ev.score?(' '+(ev.score*100|0)+'%'):''}</td>
-      <td>${who}</td><td>${ev.pid||''}</td><td>${what}</td></tr>`}).join('');
+      <td>${who}</td><td>${ev.pid||''}</td><td>${what}${txt}</td></tr>`}).join('');
   document.querySelector('#log tbody').innerHTML = rows;
+  const logBox = document.querySelector('#log').parentElement;
+  logBox.scrollTop = logBox.scrollHeight;
 }
 document.getElementById('more-log').onclick = function(){
   logOffset += 200; loadLog();

@@ -130,7 +130,7 @@ class DedupEngine:
         text = FP.normalize(FP.extract_text(platform, post))
         if not text:
             # 纯图/纯视频无文字：不可能凭文字判重 → 一律按新帖（记日志）
-            self._log(platform, pid, uid, ts, 'empty_text')
+            self._log(platform, pid, uid, ts, 'empty_text', post=post)
             return self._canonical(platform, pid, uid, post, ts, sid=None)
         h = FP.exact_hash(text)
         bag = FP.ngram_bags(text)
@@ -156,7 +156,8 @@ class DedupEngine:
         # 3. 模糊判重：全信源池（sid 桶 + 各成员 acct 桶，同平台多号先汇总
         #    再跨平台比，D20；窗口 |Δt|≤1h，D3）
         buckets = self.registry.buckets_for_sid(sid)
-        hit = self._fuzzy_find(buckets, text_bag=bag, ts=ts, platform=platform, pid=pid)
+        hit = self._fuzzy_find(buckets, text_bag=bag, ts=ts, platform=platform,
+                               pid=pid, post=post)
         if hit:
             score = hit['score']
             return self._duplicate(platform, pid, uid, ts, post, sid=sid,
@@ -166,7 +167,8 @@ class DedupEngine:
 
     # ---------- 判定实现 ----------
 
-    def _fuzzy_find(self, buckets, *, text_bag, ts, platform: str, pid: str):
+    def _fuzzy_find(self, buckets, *, text_bag, ts, platform: str, pid: str,
+                    post: Optional[dict] = None):
         """在同池指纹里找命中（|Δt|≤window_hours，D3）；返回 {'rec','score'} 或 None"""
         lo, hi = ts - 3600 * self.window_hours, ts + 3600 * self.window_hours
         best = None
@@ -188,7 +190,7 @@ class DedupEngine:
             self._log(near['rec'].get('platform'), near['rec'].get('pid'),
                       near['rec'].get('uid'), near['rec'].get('t'),
                       'near_miss', score=round(near['score'], 3),
-                      new_platform=platform, new_pid=pid)
+                      new_platform=platform, new_pid=pid, post=post)
         return best
 
     def _canonical(self, platform: str, pid: str, uid: str, post: dict, ts: float, *,
@@ -203,7 +205,7 @@ class DedupEngine:
         rec = _canonical_rec(platform, pid, uid, sid, aid, ts, h)
         self.ledger.put_alias(platform, pid, rec)
         self._store_fingerprint(f'sid:{sid}', platform, pid, uid, ts, h, bag)
-        self._log(platform, pid, uid, ts, 'canonical', sid=sid, aid=aid)
+        self._log(platform, pid, uid, ts, 'canonical', sid=sid, aid=aid, post=post)
         return {'decision': 'canonical', 'sid': str(sid), 'aid': aid}
 
     def _duplicate(self, platform: str, pid: str, uid: str, ts: float, post: dict,
@@ -221,7 +223,7 @@ class DedupEngine:
         self._log(platform, pid, uid, ts, 'duplicate', reason=reason,
                   score=round(float(score), 3),
                   dup_of=rec['dup_of'],
-                  mode=self.mode)
+                  mode=self.mode, post=post)
         return {'decision': 'duplicate', 'reason': reason, 'score': round(float(score), 3)}
 
     def _store_fingerprint(self, bucket: str, platform: str, pid: str, uid: str,
@@ -234,9 +236,24 @@ class DedupEngine:
             rec['g'] = bag
         self.ledger.append_fingerprint(bucket, rec)
 
-    def _log(self, platform, pid, uid, ts, kind: str, **extra):
-        self.ledger.log_event({'kind': kind, 'platform': platform, 'pid': str(pid),
-                               'uid': str(uid), 't': ts or time.time(), **extra})
+    def _log(self, platform, pid, uid, ts, kind: str, *, post=None, text=None,
+             **extra):
+        """日志事件；post/text 给出时附 80 字内容快照，便于网页端详情预览"""
+        if text is None and post:
+            fn = _plat_attr(platform, 'display_text')
+            if fn is not None:
+                try:
+                    text = fn(post) or ''
+                except Exception:
+                    text = ''
+            text = text or ((post or {}).get('content')
+                            or (post or {}).get('title') or '')
+        ev = {'kind': kind, 'platform': platform, 'pid': str(pid),
+              'uid': str(uid), 't': ts or time.time()}
+        if text:
+            ev['text'] = ' '.join(str(text).split())[:80]
+        ev.update(extra)
+        self.ledger.log_event(ev)
 
     # ---------- 未关联批量计数日志 ----------
 
