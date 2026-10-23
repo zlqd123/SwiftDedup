@@ -148,7 +148,7 @@ class SDHub:
     def _tail_note(self, platform: str, text: str) -> str:
         if not self.tail_note_on:
             return text
-        note = f'来自{PLATFORM_NAME.get(platform, platform)}'
+        note = f'来自{_plat_display(platform)}'
         if (text or '').rstrip().endswith(note):
             return text                                    # 幂等：不叠加（D10）
         return f"{(text or '').rstrip()}\n{note}"
@@ -179,7 +179,7 @@ class SDHub:
             'aid': rec.get('aid') or '',
             'sid': rec.get('sid') or '',
             'platform': platform,
-            'platform_name': PLATFORM_NAME.get(platform, platform),
+            'platform_name': _plat_display(platform),
             'pid': pid, 'uid': uid,
             'author': author,
             'text': text,
@@ -667,7 +667,7 @@ class SDHub:
     async def qrcode_image(self, request):
         """登录流程运行的实时落盘文件；只在面板点开时被拉取（spec §9.4）"""
         platform = request.match_info['platform']
-        if platform not in PLATFORM_NAME or platform == 'sd':
+        if not _plat_has(platform):
             return web.json_response({'error': 'unknown platform'}, status=404)
         path = Path('./data') / platform / 'qrcode.png'
         if not path.exists():
