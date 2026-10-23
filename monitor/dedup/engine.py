@@ -142,6 +142,11 @@ class DedupEngine:
             self._log_unclaimed(platform, pid, uid, ts)
             return {'decision': 'unclaimed'}
 
+        # 1.5 分组开关：该信源未启用判重 → 不比对、不领号、不留指纹（其它池不受影响）
+        if not self.registry.dedup_enabled(sid):
+            logger.debug(f"[判重] {platform}/{pid} 信源 {sid} 未启用判重，跳过")
+            return {'decision': 'dedup_off', 'sid': sid}
+
         # 2. 逐字级重复：**同池内**哈希命中（跨池永不比较，spec §2.3；
         #    无论时间，spec D2）
         pool_buckets = set(self.registry.buckets_for_sid(sid))

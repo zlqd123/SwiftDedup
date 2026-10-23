@@ -19,8 +19,6 @@ from loguru import logger
 
 from ..core.platform import names as _plat_names
 
-from ..core.platform import names as _plat_names
-
 
 
 class SourceRegistry:
@@ -93,9 +91,10 @@ class SourceRegistry:
                 continue
             name = str((entry or {}).get('name') or '').strip()
             accounts = entry.get('accounts') or {}
+            # 以已知平台名为准归一化；未知平台 key 一并保留 —— 否则"平台插件
+            # 尚未 import 的进程"(离线探针/工具脚本)会静默丢失整组账号映射。
             normalized = {}
-            for p in _plat_names():
-                v = accounts.get(p)
+            for p, v in accounts.items():
                 uids = []
                 for u in (v or []):
                     u = str(u).strip()
@@ -106,12 +105,17 @@ class SourceRegistry:
             if not normalized and layer != 'runtime':
                 # 手写 yaml 里无账号的空占位跳过；运行层(UI 新建、尚未绑账号)必须保留
                 continue
-            rec = {'sid': sid, 'name': name or f'信源{sid}', 'accounts': normalized}
+            rec = {'sid': sid, 'name': name or f'信源{sid}', 'accounts': normalized,
+                   'dedup': bool(entry.get('dedup', True))}
             if sid in seen:                           # 后者覆盖前者（runtime 优先）
                 rec = {**seen[sid], 'accounts': {**seen[sid].get('accounts', {}), **normalized}}
+                rec['dedup'] = rec.get('dedup', True)  # runtime 层覆盖 yaml 层（rec 已含上层值）
+                if layer == 'runtime':
+                    rec['dedup'] = bool(entry.get('dedup', True))
             seen[sid] = rec
         runtime_now = [{'id': sid, 'name': rec['name'],
-                        'accounts': rec['accounts']} for sid, rec in seen.items()]
+                        'accounts': rec['accounts'],
+                        'dedup': rec.get('dedup', True)} for sid, rec in seen.items()]
         if (self._runtime.get('sources') or []) != runtime_now:
             self._runtime['sources'] = runtime_now
             self._persist_runtime()
@@ -166,6 +170,25 @@ class SourceRegistry:
     def has_sid(self, sid: int) -> bool:
         return int(sid) in self._sources
 
+    def dedup_enabled(self, sid) -> bool:
+        """该信源是否启用聚合判重（分组开关，缺省 true 保持全局旧行为）"""
+        rec = self._sources.get(int(sid)) if sid is not None else None
+        return bool(rec.get('dedup', True)) if rec else False
+
+    def set_dedup(self, sid, flag: bool) -> bool:
+        """设置信源级判重开关并持久化（runtime 层）；不影响其它信源"""
+        rec = self._sources.get(int(sid))
+        if not rec:
+            return False
+        rec['dedup'] = bool(flag)
+        self._runtime['sources'] = [r for r in (self._runtime.get('sources') or [])
+                                    if r.get('id') != int(sid)]
+        self._runtime['sources'].append({'id': int(sid), 'name': rec['name'],
+                                         'accounts': dict(rec['accounts']),
+                                         'dedup': bool(flag)})
+        self._persist_runtime()
+        return True
+
     def next_free_sid(self) -> int:
         """自动顺编：从 10001 起第一个空闲号（手动小号 1-9999 段不自动占用）"""
         used = set(self._sources)
@@ -178,6 +201,22 @@ class SourceRegistry:
 
     def _persist_runtime(self):
         self.runtime_path.parent.mkdir(parents=True, exist_ok=True)
+        # 兜底：与盘上现版本按 sid 做 accounts union —— 任何一侧多出的账号都保留，
+        # 杜绝"读到空映射→写回空映射"的自毁（reload 已归一化保留全部平台）。
+        try:
+            prev = json.loads(self.runtime_path.read_text(encoding='utf-8'))
+            prev_by_id = {int(r['id']): r for r in (prev.get('sources') or []) if r.get('id')}
+            for r in (self._runtime.get('sources') or []):
+                old = (prev_by_id.get(int(r['id'])) or {}).get('accounts') or {}
+                new = r.get('accounts') or {}
+                for p, uids in old.items():
+                    if uids and p not in new:
+                        r['accounts'] = dict(r.get('accounts') or {})
+                        r['accounts'][p] = list(uids)
+                    elif uids and new.get(p) != uids and not set(new.get(p) or []):
+                        r['accounts'][p] = list(uids)
+        except Exception:
+            pass  # 盘上不可读/不存在 → 首次写入
         tmp = self.runtime_path.with_suffix('.tmp')
         tmp.write_text(json.dumps(self._runtime, ensure_ascii=False, indent=2), encoding='utf-8')
         tmp.replace(self.runtime_path)

@@ -410,6 +410,8 @@ class SDHub:
             return web.json_response({'error': 'source not found'}, status=404)
         if 'name' in body:
             self.registry.rename_source(int(sid), str(body.get('name') or rec['name']))
+        if 'dedup' in body:
+            self.registry.set_dedup(int(sid), bool(body.get('dedup')))
         accounts = body.get('accounts') or {}
         reissued = {}
         for p, uids in accounts.items():
@@ -635,7 +637,7 @@ class SDHub:
             'seed': {'done': bool(state.get('done')), 'counts': state.get('counts') or {}},
             'unclaimed': self.registry.unclaimed(),
             'sources': [{'sid': s['sid'], 'sid3': pad_sid(s['sid']), 'name': s['name'],
-                         'accounts': s['accounts'],
+                         'accounts': s['accounts'], 'dedup': s.get('dedup', True),
                          'counters': self.ledger.counter_status(s['sid'])}
                         for s in self.registry.all_sources()],
             'recent_log': self.ledger.read_log(30),
@@ -1092,6 +1094,8 @@ async function refresh(){
     return `<div style="margin:6px 0"><b>${x.sid3||x.sid}</b> ${x.name}
       <span class="mute">近3日发放：${cntFmt(x.counters||{})}</span><br>${accts}
       <button class="btn-min" onclick="srcRename(${x.sid})">改名</button>
+      <label class="mute" style="margin-left:6px;cursor:pointer">去重
+      <input type="checkbox" ${x.dedup !== false ? 'checked' : ''} onchange="srcDedup(${x.sid},this.checked)"></label>
       <button class="btn-min warn" onclick="srcDel(${x.sid},this)">删除</button>
       <form style="display:inline;margin-left:6px" onsubmit="return linkIn(${x.sid})">
       <select id="lkg-${x.sid}">${PLAT_OPTS}</select>
@@ -1201,6 +1205,11 @@ async function srcDel(sid, btn){
     await api('/api/sd/source/'+sid, {method:'DELETE'});
     refresh(); loadWatchlist();
   });
+}
+async function srcDedup(sid, on){
+  const r = await api('/api/sd/source/'+sid, {method:'PATCH',
+    headers:{'Content-Type':'application/json'}, body: JSON.stringify({dedup: !!on})});
+  if (r && r.error) alert('切换失败: ' + r.error);
 }
 async function unlink(sid, p, u, btn){
   armDel(btn, async () => {
