@@ -33,6 +33,9 @@ SwiftDedup/
 - 展示钩子：`display_text` / `forward_note` / `image_urls` / `post_link`
 - 播种钩子：`iter_seed_cache`
 
+**想接入一个新平台？** 全部契约、生命周期、钩子语义、数据布局与操作
+清单见 [`docs/platform-dev.md`](docs/platform-dev.md)（平台插件开发指南）。
+
 ## 网页控制台
 
 - `/ui/` 门户；`/ui/login/` 登录扫码；`/ui/opener/` 操作账号；`/ui/config/` 配置编辑
@@ -46,7 +49,8 @@ SwiftDedup/
 指纹只比文字（含标题与引用原帖）：逐字哈希级 + 4字符 n-gram 包含率模糊级，
 其中指纹账本写 `/data/dedup/`。`config.dedup.mode`: **shadow**（影子）/ **enforce**（执行）。
 
-回归基准：`python scripts/verify_corpus.py`。
+回归基准：判重语料回归随平台插件仓库提供（`platform/tools/verify_corpus.py`，
+基准 canonical 61 / duplicate 22，见插件仓 README）。
 
 ## License
 

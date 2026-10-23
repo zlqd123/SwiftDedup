@@ -64,13 +64,34 @@ class SwiftDedupApp:
             except Exception:
                 pass
         log_cfg = self.config.logging
+
+        # [来源] 前缀：按 loguru record 的调用模块归属框架或平台
+        # （插件加载后的模块名形如 sdplat.<平台名>.service，见 core/platform.py）
+        def _source(record) -> str:
+            parts = (record.get('name') or '').split('.')
+            if parts and parts[0] in ('sdplat', 'platform') and len(parts) > 1:
+                key = parts[1]
+                from monitor.core.platform import display_name
+                return display_name(key) or key or '框架'
+            return '框架'
+
+        def _fmt_console(record):
+            return ("<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+                    "<level>{level: <8}</level> | "
+                    f"<cyan>[{_source(record)}]</cyan> "
+                    "<level>{message}</level>")
+
+        def _fmt_file(record):
+            return ("{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | "
+                    f"[{_source(record)}] {{message}}")
+
         logger.remove()
         logger.add(sys.stdout, level=log_cfg.get('console_level', 'INFO'), colorize=True,
-                   format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>")
+                   format=_fmt_console)
         log_file = Path(log_cfg.get('file', './data/logs/hub.log'))
         log_file.parent.mkdir(parents=True, exist_ok=True)
         logger.add(log_file, level=log_cfg.get('file_level', 'DEBUG'), encoding="utf-8",
-                   format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
+                   format=_fmt_file,
                    rotation="00:00",
                    retention=f"{log_cfg.get('backup_days', 7)} days")
         logger.info("日志系统初始化完成")
