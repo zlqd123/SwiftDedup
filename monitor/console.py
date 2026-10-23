@@ -62,20 +62,6 @@ class Console:
         return (html.replace('__NAV__', nav).replace('__PLAT_CARDS__', cards)
                     .replace('__PS__', ps).replace('__PLAT_LABELS__', labels))
 
-    def _render(self, html: str) -> str:
-        """页面渲染注入：顶栏平台项/门户卡片/登录页平台表/配置页平台标签"""
-        nav = ('<a href="/ui/">门户</a><a href="/ui/login/">登录扫码</a>'
-               '<a href="/ui/sd/">信源管理</a><a href="/ui/events/">信源面板</a>'
-               + ''.join(f'<a href="/ui/{n}/">{_plat_display(n)}面板</a>'
-                         for n in _plat_names())
-               + '<a href="/ui/opener/">操作账号</a><a href="/ui/config/">配置</a>')
-        cards = ''.join(f' ["{_plat_display(n)}面板","/ui/{n}/","{_plat_display(n)}侧实时监控"],'
-                        for n in _plat_names())
-        ps = '[' + ','.join(f'["{n}","{_plat_display(n)}"]' for n in _plat_names()) + ']'
-        labels = json.dumps({n: _plat_display(n) for n in _plat_names()},
-                            ensure_ascii=False)
-        return (html.replace('__NAV__', nav).replace('__PLAT_CARDS__', cards)
-                    .replace('__PS__', ps).replace('__PLAT_LABELS__', labels))
 
     def register(self, app: web.Application):
         r = app.router
@@ -170,7 +156,7 @@ class Console:
     def _manual_page(self, title: str, body: str):
         html = ('<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">'
                 '<title>SwiftDedup · 操作账号</title><style>' + _COMMON_CSS + '</style></head><body>'
-                '<header><b>操作账号</b>' + '__NAV__' + '</header><main>'
+                '<header><b>操作账号</b>' + self._render('__NAV__') + '</header><main>'
                 '<div class="card"><h2>' + title + '</h2><p>' + body + '</p>'
                 '<p class="mute">说明：浏览器复用主程序的登录 Cookie；'
                 '手动搜索账号后，到「信源管理→抓取名单」按 uid 添加监控。'
