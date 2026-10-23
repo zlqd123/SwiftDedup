@@ -32,7 +32,6 @@ development: false
 
 dedup:
   enabled: true
-  mode: shadow                         # shadow（影子）/ enforce（执行）
   fuzzy_threshold: 0.6
   window_hours: 1
   near_miss_low: 0.4

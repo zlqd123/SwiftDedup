@@ -11,7 +11,8 @@
   3. 信源池内 模糊判重：同自然日(或|Δ|≤4h) 且 包含率≥0.60；0.40~0.60 记近失（影子盯防）
   4. 通过 → canonical：领聚合动态号（sid+日期+序号，重复帖不领号）
 
-mode: shadow（只记账，sd 流照发）/ enforce（重复不进 sd 流）
+信源级 dedup 开关：每个信源可独立开/关（sources.yaml `dedup` 字段 / 面板信源卡）。
+历史 shadow/enforce 双模式已移除；旧日志行中的 mode 字段仅作追溯。
 """
 
 import time
@@ -58,7 +59,6 @@ class DedupEngine:
         self.ledger = ledger
         dd = (config.dedup if hasattr(config, 'dedup') else None) or self._default_cfg()
         self.cfg = dd
-        self.mode = dd.get('mode', 'shadow')
         self.threshold = float(dd.get('fuzzy_threshold', FP.FUZZY_THRESHOLD))
         self.window_hours = float(dd.get('window_hours', 1.0))
         self.near_low = float(dd.get('near_miss_low', FP.NEAR_MISS_LOW))
@@ -72,23 +72,16 @@ class DedupEngine:
 
     @staticmethod
     def _default_cfg():
-        return {'mode': 'shadow', 'fuzzy_threshold': FP.FUZZY_THRESHOLD,
+        return {'fuzzy_threshold': FP.FUZZY_THRESHOLD,
                 'window_hours': 1.0, 'near_miss_low': FP.NEAR_MISS_LOW,
                 'enabled': True}
 
     # ---------- 状态 ----------
 
     def status(self) -> dict:
-        return {'mode': self.mode, 'enabled': self.enabled,
+        return {'enabled': self.enabled,
                 'fuzzy_threshold': self.threshold, 'window_hours': self.window_hours}
 
-    def set_mode(self, mode: str) -> bool:
-        if mode not in ('shadow', 'enforce'):
-            return False
-        self.mode = mode
-        self.ledger.log_event({'kind': 'mode', 'mode': mode})
-        logger.info(f"[判重] 模式切换 → {mode}")
-        return True
 
     # ---------- 发布时间 ----------
 
@@ -227,8 +220,7 @@ class DedupEngine:
         self.ledger.put_alias(platform, pid, rec)
         self._log(platform, pid, uid, ts, 'duplicate', reason=reason,
                   score=round(float(score), 3),
-                  dup_of=rec['dup_of'],
-                  mode=self.mode, post=post)
+                  dup_of=rec['dup_of'], post=post)
         return {'decision': 'duplicate', 'reason': reason, 'score': round(float(score), 3)}
 
     def _store_fingerprint(self, bucket: str, platform: str, pid: str, uid: str,

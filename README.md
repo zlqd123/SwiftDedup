@@ -47,7 +47,8 @@ SwiftDedup/
 ## 判重
 
 指纹只比文字（含标题与引用原帖）：逐字哈希级 + 4字符 n-gram 包含率模糊级，
-其中指纹账本写 `/data/dedup/`。`config.dedup.mode`: **shadow**（影子）/ **enforce**（执行）。
+其中指纹账本写 `/data/dedup/`。注册表内每个信源可独立控制判重：`dedup: false`
+关闭该池判重（不比对、不领聚合号），或在管理面板信源卡用「去重」开关热切。
 
 回归基准：判重语料回归随平台插件仓库提供（`platform/tools/verify_corpus.py`，
 基准 canonical 61 / duplicate 22，见插件仓 README）。

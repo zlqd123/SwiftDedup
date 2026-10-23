@@ -236,7 +236,7 @@ class Console:
         except Exception as e:
             return web.json_response({'error': f'读取配置失败: {e}'}, status=500)
         return web.json_response({'config': data, 'path': str(path),
-                                  'hint': '多数项需重启进程生效；dedup.mode 等少数项可热改'})
+                                  'hint': '多数项需重启进程生效；另有少数项可热改'})
 
     async def api_config_save(self, request):
         """保存配置：整体树按 JSON 覆盖写入（先备份 .bak）"""
@@ -410,7 +410,7 @@ _CONFIG_HTML = ('<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">'
                 ' logging:"日志",console_level:"控制台日志级别",file_level:"文件日志级别",'
                 ' file:"日志文件",backup_days:"日志保留天数",'
                 ' maintenance:"每日维护",browser_restart:"浏览器重启",'
-                ' dedup:"判重与信源",mode:"判重模式",fuzzy_threshold:"模糊相似度阈值",'
+                ' dedup:"判重与信源",fuzzy_threshold:"模糊相似度阈值",'
                 ' window_hours:"模糊判重窗口(小时)",near_miss_low:"近失下限",'
                 ' tail_note:"正文尾注",sources_file:"信源映射文件",data_dir:"判重账本目录",'
                 ' seeds:"历史播种路径",platform:"平台",path:"路径",'
@@ -426,10 +426,10 @@ _CONFIG_HTML = ('<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8">'
                 ' window_start:"窗口开始(时)",window_end:"窗口结束(时)",guard_minutes:"护栏(分钟)",'
                 ' dashboard_level:"面板日志级别",width:"宽",height:"高",...PLAT_CN_LABELS,'
                 '};'
-                'const ALIAS={"shadow":"影子(只记账)","enforce":"强制(重复静默)",'
+                'const ALIAS={'
                 '"chromium":"完整内核","chromium-headless-shell":"精简内核",'
                 '"INFO":"信息","DEBUG":"调试","WARNING":"警告","ERROR":"错误"};'
-                'const CHOICES={"dedup.mode":["shadow","enforce"],'
+                'const CHOICES={'
                 ' "logging.console_level":["INFO","DEBUG","WARNING","ERROR"],'
                 ' "logging.file_level":["INFO","DEBUG","WARNING","ERROR"],'
                 ' "logging.dashboard_level":["INFO","DEBUG","WARNING","ERROR"],'

@@ -102,7 +102,6 @@ class SDHub:
         r.add_get('/atom/sd/{sid}', self.feed)
         # api —— 管理
         r.add_get('/api/sd/status', self.api_status)
-        r.add_post('/api/sd/mode', self.api_mode)
         r.add_post('/api/sd/seed', self.api_seed)
         r.add_get('/api/sd/log/dedup', self.api_log)
         r.add_post('/api/sd/release', self.api_release)
@@ -351,13 +350,6 @@ class SDHub:
             'unclaimed': self.registry.unclaimed(),
             'sources': len(self.registry.all_sources()),
         })
-
-    async def api_mode(self, request):
-        body = await request.json()
-        mode = str(body.get('mode') or '')
-        if not self.engine.set_mode(mode):
-            return web.json_response({'error': 'mode must be shadow|enforce'}, status=400)
-        return web.json_response({'engine': self.engine.status()})
 
     async def api_seed(self, request):
         body = await request.json() if request.can_read_body else {}
@@ -941,7 +933,6 @@ async function poll(){
     const seedTxt = seed.done ? '<span class="fresh">完成</span>' :
       PLATFORMS.map(([p, label]) => esc(label) + ' ' + ((seed.counts||{})[p] || 0)).join(' / ');
     setHTML($('#sys'),
-      `<dt>判重模式</dt><dd class="${eng.mode === 'enforce' ? 'fresh' : 'warn'}">${esc(MODE_CN2[eng.mode] || eng.mode || '—')}${eng.enabled ? '' : ' (未启用)'}</dd>`+
       `<dt>模糊阈值 / 时间窗</dt><dd>${eng.fuzzy_threshold == null ? '—' : eng.fuzzy_threshold} / ${eng.window_hours == null ? '—' : eng.window_hours}h</dd>`+
       `<dt>播种</dt><dd>${seedTxt}</dd>`+
       `<dt>信源 / 已关联账号</dt><dd>${(d.sources || []).length} / ${linked}</dd>`+
@@ -1056,7 +1047,7 @@ _DASHBOARD_HTML = '''<!DOCTYPE html>
   <table class="log" id="log"><thead><tr><th>时间</th><th>决定</th><th>平台 · 账号</th><th>动态id</th><th>详情</th></tr></thead>
   <tbody></tbody></table></div>
   <button id="more-log" class="btn-min">加载更多</button>
-  <button id="toggle-mode" class="warn">模式切换：影子(观察) ⇄ 执行(强制)</button></div>
+</div>
 </main>
 <script>
 const PLATFORMS=__PLAT_BOOT__;
@@ -1075,13 +1066,11 @@ function cntFmt(c){
 }
 function modeOf(m){ return m; }
 let logOffset = 0;
-let lastMode = 'shadow';
 const NICKD = {};   // 平台 → {uid: 昵称}
 const nickOf = (p, u) => ((NICKD[p] || {})[String(u)]) || '';
 async function api(p, opt){const r=await fetch(p,opt);return r.json();}
 async function refresh(){
   const s = await api('/ui/sd/stats');
-  lastMode = s.engine.mode;
   SIDS = (s.sources || []).map(x =>
     ({sid: x.sid, sid3: x.sid3, name: x.name}));  SRCNAMES = {};
   SIDS.forEach(x => SRCNAMES[x.sid] = x.name);
@@ -1223,12 +1212,6 @@ document.getElementById('new-src').onsubmit = async function(e){
   const name = document.getElementById('ns-name').value.trim();
   await api('/api/sd/source',{method:'POST',headers:{'Content-Type':'application/json'},
     body: JSON.stringify({id: id||null, name})});
-  refresh();
-};
-document.getElementById('toggle-mode').onclick = async function(){
-  const cur = lastMode.includes('enforce') ? 'shadow' : 'enforce';
-  await api('/api/sd/mode',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({mode:cur})});
   refresh();
 };
 async function loadNicks(){

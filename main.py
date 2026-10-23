@@ -161,8 +161,8 @@ class SwiftDedupApp:
                 self.engine = DedupEngine(self.config, self.registry, self.ledger)
                 self.sdhub = SDHub(self.config, self.engine, self.registry)
                 self.sdhub.seeder = Seeder(self.engine, dd.get('seeds') or [])
-                logger.info(f"[判重] 引擎就绪 mode={self.engine.mode} "
-                            f"(信源 {len(self.registry.all_sources())}, 日志 data/dedup/)")
+                logger.info(f"[判重] 引擎就绪 (信源 {len(self.registry.all_sources())}, "
+                            f"日志 data/dedup/)")
 
             # 3. 平台"准备"阶段（不登录）：建存储/浏览器/API 对象
             #    → 路由可注册 → 控制台立刻可用（用户可在网页扫码）
