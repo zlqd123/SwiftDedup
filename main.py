@@ -79,11 +79,11 @@ class SwiftDedupApp:
             return ("<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
                     "<level>{level: <8}</level> | "
                     f"<cyan>[{_source(record)}]</cyan> "
-                    "<level>{message}</level>")
+                    "<level>{message}</level>\n{exception}")
 
         def _fmt_file(record):
             return ("{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | "
-                    f"[{_source(record)}] {{message}}")
+                    f"[{_source(record)}] {{message}}\n{{exception}}")
 
         logger.remove()
         logger.add(sys.stdout, level=log_cfg.get('console_level', 'INFO'), colorize=True,

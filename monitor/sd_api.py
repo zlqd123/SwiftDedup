@@ -819,8 +819,11 @@ const esc = s => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>
 const fmtCN = ts => { if(ts==null) return "—"; const d = new Date(ts*1000);
   return `${d.getMonth()+1}月${d.getDate()}日 ${d.toTimeString().slice(0,5)}`; };
 
-const KIND_CN = {dup:'重复', canonical:'主帖', exact:'精确命中', near_miss:'近失',
-  unclaimed:'未关联', released:'放行', mode:'模式', seed_done:'播种完成', fingerprint:'指纹'};
+const KIND_CN = {dup:'重复', duplicate:'重复', canonical:'主帖', exact:'精确命中',
+  near_miss:'近失', unclaimed:'未关联', released:'放行', mode:'模式',
+  seed_done:'播种完成', fingerprint:'指纹', known:'已见过', empty_text:'无文字',
+  skipped_lottery:'抽奖跳过'};
+const REASON_CN = {exact:'精确', fuzzy:'模糊', lottery:'抽奖', window:'时间窗'};
 const KIND_LV = {canonical:'INFO', dup:'INFO', exact:'INFO', near_miss:'WARNING',
   unclaimed:'INFO', released:'INFO', mode:'INFO', seed_done:'INFO', fingerprint:'DEBUG'};
 const MODE_CN2 = {shadow:'影子(观察)', enforce:'执行(强制)'};
@@ -864,7 +867,7 @@ function line(ev){
   if (ev.sid != null) parts.push('sid=' + esc(ev.sid));
   if (ev.score != null) parts.push(Math.round(ev.score*100) + '%');
   if (ev.mode) parts.push('模式 ' + esc(MODE_CN2[ev.mode] || ev.mode));
-  if (ev.reason) parts.push(esc(ev.reason));
+  if (ev.reason) parts.push(esc(REASON_CN[ev.reason] || ev.reason));
   if (ev.counts) parts.push(Object.entries(ev.counts).map(([k,v])=>esc(k)+'×'+v).join(' '));
   if (ev.dup_of) parts.push('→ ' + esc(ev.dup_of.platform || '') + ':' + esc(ev.dup_of.pid || ''));
   const kc = `<span class="k">${esc(KIND_CN[ev.kind] || ev.kind || '·')}</span>`;
@@ -974,7 +977,7 @@ async function poll(){
       }).join(' ');
       const cnt = Object.entries(s.counters || {}).sort((x, y) => y[0].localeCompare(x[0]))
         .slice(0, 3).map(([k, v]) =>
-          `${esc(String(k).slice(4,6).replace(/^0/, ''))}日 ${v}`).join(' · ') || '—';
+          `${esc(String(k).slice(6,8).replace(/^0/, ''))}日 ${v}`).join(' · ') || '—';
       return `<tr><td class="num">${esc(s.sid3 || s.sid)}</td><td>${esc(s.name || '')}</td>` +
              `<td>${acc}</td><td class="num">${cnt}</td></tr>`;
     }).join('') || '<tr><td colspan="4" class="dim">尚无信源</td></tr>');
