@@ -1,0 +1,53 @@
+# SwiftDedup 配置示例
+# 平台专属小节写法见 platform/ 内各平台的 README；
+# 复制本文件为 config.yaml 后按需修改。
+
+api:
+  host: 0.0.0.0
+  port: 28801
+  external_base_url: http://127.0.0.1:28801
+  dashboard: true
+  open_browser: false
+
+browser:
+  channel: chromium-headless-shell     # chromium / chromium-headless-shell
+  viewport: {width: 1280, height: 720}
+  user_data_dir: ./data/browser_profile
+
+logging:
+  console_level: INFO
+  file_level: DEBUG
+  dashboard_level: INFO
+  file: ./data/logs/hub.log
+  backup_days: 7
+
+maintenance:
+  browser_restart:
+    enabled: true
+    window_start: 13
+    window_end: 15
+    guard_minutes: 5
+
+development: false
+
+dedup:
+  enabled: true
+  mode: shadow                         # shadow（影子）/ enforce（执行）
+  fuzzy_threshold: 0.6
+  window_hours: 1
+  near_miss_low: 0.4
+  tail_note: true
+  sources_file: sources.yaml
+  data_dir: ./data/dedup
+  # 历史播种（可选）：把旧监控缓存提炼成指纹，只学习不推送
+  # seeds:
+  # - platform: <平台名>
+  #   path: <旧缓存目录>
+
+platforms:
+  # 按 platform/ 中已安装的平台插件填写，例如：
+  # <平台名>:
+  #   enabled: true
+  #   monitor: {check_interval: 3}
+  #   storage: {cache_dir: ./data/<平台名>/cache}
+  #   watchlist: {file: ./data/<平台名>/watchlist.json}

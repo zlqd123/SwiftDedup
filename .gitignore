@@ -1,0 +1,17 @@
+# 运行数据 / 用户私有
+data/
+config.yaml
+config.yaml.bak
+sources.yaml
+*.log
+
+# 平台插件（独立仓库，clone 到 platform/）
+platform/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 工具链
+.venv/
