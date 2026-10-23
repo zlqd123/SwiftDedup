@@ -616,7 +616,7 @@ class SDHub:
 
     def _render(self, html: str) -> str:
         """页面渲染时注入：平台引导(PLATFORMS)、导航平台链接、平台标签配色"""
-        boot = 'const PLATFORMS=' + _json.dumps(
+        boot = _json.dumps(
             [[n, _plat_display(n)] for n in _plat_names()], ensure_ascii=False)
         nav = ''.join(f'<a href="/ui/{n}/">{_plat_display(n)}面板</a>'
                       for n in _plat_names())
