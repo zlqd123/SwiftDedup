@@ -1246,7 +1246,7 @@ async function loadLog(){
   const d = await api('/api/sd/log/dedup?limit='+(60+logOffset));
   const rows = d.events.slice().reverse().map(ev=>{
     const who = ev.platform ? `${platOf(ev.platform)} <span class="dim">${esc(nickOf(ev.platform, ev.uid) || ev.uid || '')}</span>` : '';
-    const what = ev.dup_of ? `→ ${platOf(ev.dup_of.platform)}:${ev.dup_of.pid} (${esc(ev.aid||ev.dup_of.aid||'?')})` : (ev.aid?`聚合号 ${esc(ev.aid)}`:'');
+    const what = ev.dup_of ? `→ ${platOf(ev.dup_of.platform)}:${ev.dup_of.pid} (${esc(ev.aid||ev.dup_of.aid||'原帖无聚合号')})` : (ev.aid?`聚合号 ${esc(ev.aid)}`:'');
     const txt = ev.text ? `<div class="mute" style="white-space:normal">“${esc(ev.text)}”</div>` : '';
     return `<tr><td>${new Date((ev.time||0)*1000).toLocaleString()}</td><td>${KIND_CN_EV[ev.kind]||ev.kind||''}${ev.score?(' '+(ev.score*100|0)+'%'):''}</td>
       <td>${who}</td><td>${ev.pid||''}</td><td>${what}${txt}</td></tr>`}).join('');
