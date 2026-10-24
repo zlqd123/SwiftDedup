@@ -30,11 +30,11 @@ SwiftDedup/                      ← 框架仓库（不认识任何具体平台�
 - `platform/plugin.py` 存在 → 作为 `sdplat` 包加载；
 - 否则一级子目录 `<dir>/plugin.py` 存在 → 作为 `sdplat_<dir>` 包加载；
 - `plugin.py` 模块级调用 `register(plugin)`（或暴露模块级 `PLUGIN` 对象），
-  相对 import 携带兄弟包，如 `from .weibo import hooks as _wh`；
+  相对 import 携带兄弟包，如 `from .{平台包} import hooks as _h`；
 - 加载异常不影响其它插件（每目录独立 try）。
 
 要点：整仓 clone 到 `platform/` 时，**全部平台共用 `sdplat.*` 模块前缀**
-（如 `sdplat.weibo.service`）；日志来源前缀（`[微博]`/`[B站]`）就是按
+（如 `sdplat.<平台名>.service`）；日志来源前缀（`[平台显示名]`）就是按
 调用模块的第二段映射到注册表 `display_name` 的，见 §6。
 
 把 `platform/` 整个移走即可进入无平台模式：门户/登录/配置、判重引擎、
@@ -168,7 +168,7 @@ data/<名称>/
 ## 6. 日志前缀与网页面板行为
 
 - 控制台/文件日志每行自动加 `[来源]`：`[框架]` 或注册表显示名
-  （`[微博]`/`[B站]`），由 `main._setup_logging` 按 record 调用模块
+  （`[平台显示名]`），由 `main._setup_logging` 按 record 调用模块
   (`sdplat.<平台名>.*`) 映射；
 - **网页侧什么也不用做**：各平台面板挂的 loguru sink 读原始
   `record['message']`，聚合管理页读的是判重账本的结构化事件——都没前缀；
