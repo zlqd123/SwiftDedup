@@ -151,7 +151,8 @@ class SDHub:
         note = f'来自{_plat_display(platform)}'
         if (text or '').rstrip().endswith(note):
             return text                                    # 幂等：不叠加（D10）
-        return f"{(text or '').rstrip()}\n{note}"
+        # 空行隔开：尾注紧贴正文末行时，下游主题会把两者渲染成同一段
+        return f"{(text or '').rstrip()}\n\n{note}"
 
     async def _render_item(self, rec: dict, *, with_tail: bool = True) -> Optional[dict]:
         platform, pid, uid = rec['platform'], str(rec['pid']), rec.get('uid')
