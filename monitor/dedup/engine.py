@@ -115,6 +115,19 @@ class DedupEngine:
             self._log(platform, pid, uid, ts, 'skipped_lottery')
             return {'decision': 'skipped_lottery'}
 
+        # 0.2 空转发附文：仅缓存不推送（用户约定）
+        # 微博纯转发会把正文折叠成"转发微博"或空串，这类帖没有新信息，
+        # 若照常判重会因文本过短匹配不上原帖，重复领号推给下游。
+        skip_fn = _plat_attr(platform, 'skip_notify')
+        if skip_fn is not None:
+            try:
+                reason = skip_fn(post)
+            except Exception:
+                reason = ''
+            if reason:
+                self._log(platform, pid, uid, ts, f'skipped_{reason}')
+                return {'decision': f'skipped_{reason}'}
+
         # 0.5 同 pid 幂等：编辑演化/快照差异=同一帖，不重判（spec §2.4）
         known = self.ledger.get_alias(platform, pid)
         if known:
@@ -167,15 +180,14 @@ class DedupEngine:
 
     def _fuzzy_find(self, buckets, *, text_bag, ts, platform: str, pid: str,
                     post: Optional[dict] = None):
-        """在同池指纹里找命中（|Δt|≤window_hours，D3）；返回 {'rec','score'} 或 None"""
+        """在同池指纹里找命中（|Δt|≤window_hours，D3）；返回 {'rec','score'} 或 None。
+
+        桶内记录按时间有序，Ledger.window_records 二分定位窗口，不再全桶扫描。"""
         lo, hi = ts - 3600 * self.window_hours, ts + 3600 * self.window_hours
         best = None
         near = None
-        for rec in self.ledger.bucket_records(buckets):
+        for rec in self.ledger.window_records(buckets, lo, hi):
             if rec.get('platform') == platform and str(rec.get('pid')) == str(pid):
-                continue
-            rt = rec.get('t') or 0
-            if not (lo <= rt <= hi):
                 continue
             other_bag = FP.bags_from_json(rec.get('g') or [])
             score = FP.containment(text_bag, other_bag)
@@ -275,6 +287,14 @@ class DedupEngine:
         self._unc_first = 0.0
         self._unc_flushed_once = True
 
+    def flush_unclaimed_if_stale(self):
+        """定时兜底：挂起批到达窗口就算没有新帖进来也按时出日志（main 主循环周期调）"""
+        if not self._unc_pending or not self._unc_first:
+            return
+        window = 60.0 if not self._unc_flushed_once else 15.0
+        if time.time() - self._unc_first >= window:
+            self._flush_unclaimed(time.time())
+
     # ---------- 放行（spec §7） ----------
 
     def release(self, platform: str, pid: str) -> Optional[dict]:
@@ -300,6 +320,7 @@ class DedupEngine:
                    if r.get('role') == 'canonical' and r.get('platform') == platform
                    and str(r.get('uid')) == str(uid) and r.get('sid') != str(new_sid)]
         for rec in targets:
+            old_sid = rec.get('sid')
             old_aid = rec.get('aid')
             ts = rec.get('t') or time.time()
             data_date = datetime.fromtimestamp(ts).strftime('%Y%m%d')
@@ -311,19 +332,14 @@ class DedupEngine:
             rec['aids'] = history + [new_aid]
             self.ledger.put_alias(platform, rec['pid'], rec)
             self._log(platform, rec['pid'], uid, ts, 'reissue',
-                      from_sid=rec.get('sid'), to_sid=new_sid,
+                      from_sid=old_sid, to_sid=new_sid,
                       old_aid=old_aid, new_aid=new_aid)
             moved += 1
         return moved
 
     def lookup_by_aid(self, aid: str) -> Optional[dict]:
-        """按任意历史聚合id反查 canonical 记录（D19：一帖多号）"""
-        for rec in self.ledger.alias.values():
-            if rec.get('role') != 'canonical':
-                continue
-            if rec.get('aid') == aid or aid in (rec.get('aids') or []):
-                return rec
-        return None
+        """按任意历史聚合id反查 canonical 记录（D19：一帖多号；内存索引 O(1)）"""
+        return self.ledger.aid_index.get(str(aid))
 
 
 # ---------- 与平台无关的工具 ----------

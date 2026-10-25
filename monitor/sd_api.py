@@ -59,8 +59,13 @@ def _post_link(platform, post, pid: str):
     post = post or {}
     fn = _plat_attr(platform, 'post_link')
     if fn is not None:
+        # uid 从帖子自身取（user.id / user.idstr / author_id），
+        # 早期固定传空串会让微博链接退化成 https://weibo.com//{mblogid}（缺 uid）
+        user = post.get('user') or {}
+        uid = (str(user.get('idstr') or user.get('id') or '')
+               or str(post.get('author_id') or post.get('uid') or ''))
         try:
-            link, author = fn('', post)
+            link, author = fn(uid, post)
             return link or '', author or ''
         except Exception as e:
             logger.warning(f'[sd] 外链构造失败 {platform}: {e!r}')
@@ -199,8 +204,10 @@ class SDHub:
         out = []
         for s in self.registry.all_sources():
             counts = self.ledger.counter_status(s['sid'])
-            canon = sum(1 for rec in self.ledger.alias.values()
-                        if rec.get('sid') == str(s['sid']) and rec.get('role') == 'canonical')
+            recs = self.ledger.sid_index.get(str(s['sid'])) or []
+            canon = sum(1 for rec in recs
+                        if rec.get('role') == 'canonical'
+                        and str(rec.get('sid')) == str(s['sid']))
             out.append({**s, 'post_count': canon, 'counters': counts})
         return web.json_response({'sources': out, 'unclaimed': self.registry.unclaimed()})
 
@@ -209,10 +216,11 @@ class SDHub:
         rec = self.registry.source(int(sid))
         if not rec:
             return web.json_response({'error': 'source not found'}, status=404)
-        canon = [r for r in self.ledger.alias.values()
-                 if r.get('sid') == str(sid) and r.get('role') == 'canonical']
-        aliases = [r for r in self.ledger.alias.values()
-                   if r.get('sid') == str(sid) and r.get('role') == 'alias']
+        recs = self.ledger.sid_index.get(str(sid)) or []
+        canon = [r for r in recs
+                 if r.get('role') == 'canonical' and str(r.get('sid')) == str(sid)]
+        aliases = [r for r in recs
+                   if r.get('role') == 'alias' and str(r.get('sid')) == str(sid)]
         return web.json_response({'source': rec,
                                   'post_count': len(canon), 'alias_count': len(aliases),
                                   'counters': self.ledger.counter_status(sid)})
@@ -226,16 +234,18 @@ class SDHub:
             return web.json_response({'error': 'source not found'}, status=404)
         limit = self._int(request, 'limit', 20, 1, 100)
         before = self._float(request, 'before', None)
-        recs = self.ledger.timeline_for_sid(sid, limit=limit + 1, before_ts=before)
+        before_pid = request.query.get('before_pid')
+        recs = self.ledger.timeline_for_sid(sid, limit=limit + 1, before_ts=before,
+                                            before_pid=before_pid)
         items = []
         for rec in recs[:limit]:
             item = await self._render_item(rec)
             if item:
                 items.append(item)
-        more = (len(recs) > limit and
-                (recs[limit - 1].get('t') if len(recs) > limit else None))
+        last = recs[limit - 1] if len(recs) > limit else None
         return web.json_response({'sid': sid, 'items': items,
-                                  'next_before': recs[limit - 1].get('t') if len(recs) > limit else None,
+                                  'next_before': last.get('t') if last else None,
+                                  'next_before_pid': str(last.get('pid')) if last else None,
                                   'has_more': len(recs) > limit})
 
     async def post_detail(self, request):
@@ -408,9 +418,12 @@ class SDHub:
         accounts = body.get('accounts') or {}
         reissued = {}
         for p, uids in accounts.items():
-            if not _plat_has(p):
+            if not _plat_has(p) or not isinstance(uids, list):
                 continue
             for act in uids:
+                act = str(act).strip()
+                if not act:
+                    continue
                 old_sid = self.registry.sid_of(p, str(act))
                 self.registry.upsert_link(p, act, int(sid))
                 # 重新关联到不同信源 → 该账号动态按新信源重发聚合id（D19）
@@ -505,10 +518,11 @@ class SDHub:
         f = self._nick_file(platform)
         try:
             raw = f.read_text(encoding='utf-8')
-            w = json.loads(raw)
-            return w
+            return json.loads(raw)
         except Exception as e:
-            logger.warning(f'[昵称读取失败] {platform}: {e!r} raw前40={f.read_text(encoding="utf-8", errors="ignore")[:40]}')
+            # 注意：这里绝不能再读一次文件（文件不存在时会在 except 里二次抛错，
+            # 曾把整个 /api/sd/nicknames 打成 500）
+            logger.warning(f'[昵称读取失败] {platform}: {e!r} path={f}')
             return {'users': [], 'nicknames': {}}
 
     async def api_nicknames(self, request):
@@ -817,7 +831,7 @@ const fmtCN = ts => { if(ts==null) return "—"; const d = new Date(ts*1000);
 const KIND_CN = {dup:'重复', duplicate:'重复', canonical:'主帖', exact:'精确命中',
   near_miss:'近失', unclaimed:'未关联', released:'放行', mode:'模式',
   seed_done:'播种完成', fingerprint:'指纹', known:'已见过', empty_text:'无文字',
-  skipped_lottery:'抽奖跳过'};
+  skipped_lottery:'抽奖跳过', skipped_empty_forward:'空转发跳过'};
 const REASON_CN = {exact:'精确', fuzzy:'模糊', lottery:'抽奖', window:'时间窗'};
 const KIND_LV = {canonical:'INFO', dup:'INFO', exact:'INFO', near_miss:'WARNING',
   unclaimed:'INFO', released:'INFO', mode:'INFO', seed_done:'INFO', fingerprint:'DEBUG'};
@@ -1058,7 +1072,8 @@ if(document.getElementById('wl-plat')) document.getElementById('wl-plat').innerH
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 const KIND_CN_EV = {duplicate:'重复', canonical:'主帖', exact:'精确命中', near_miss:'近失',
   unclaimed:'未关联', released:'放行', mode:'模式', seed_done:'播种完成',
-  fingerprint:'指纹', skipped_lottery:'抽奖跳过', empty_text:'无文字', known:'已见过'};
+  fingerprint:'指纹', skipped_lottery:'抽奖跳过', empty_text:'无文字', known:'已见过',
+  skipped_empty_forward:'空转发跳过'};
 const MOODE_UNUSED = 0;
 function platOf(p){ return PLAT_CN[p] || p; }
 function cntFmt(c){

@@ -17,6 +17,7 @@ Plugin 需提供的属性/方法（duck protocol）：
     display_text(post) -> str              # 管理页展示文本
     forward_note(post) -> str              # 转发帖补引（无则空串）
     lottery_filtered(post) -> bool         # 抽奖公示过滤
+    skip_notify(post) -> str               # 可选：返回非空原因则"仅缓存不推送"
     image_urls(post, base) -> list[str]    # 管理页图片地址
     post_link(uid, post) -> (link, author)
     iter_seed_cache(path) -> 迭代器(lat, uid, post)   # 历史播种

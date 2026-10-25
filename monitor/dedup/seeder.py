@@ -39,6 +39,9 @@ class Seeder:
 
         counts: Dict[str, int] = {}
         seen_pids = set()
+        # 桶内已播种 pid 集合：O(1) 查重（原为逐条线性扫桶，历史缓存大时 O(n²)）
+        seeded = {(b, str(r.get('pid')))
+                  for b, recs in self.ledger.buckets.items() for r in recs}
         for cfg in self.seeds:
             platform = str(cfg.get('platform') or '').strip()
             path = Path(str(cfg.get('path') or ''))
@@ -53,7 +56,7 @@ class Seeder:
                     continue
                 seen_pids.add((plat, uid, pid))
                 n += 1
-                if self._seed_one(plat, uid, post, pid):
+                if self._seed_one(plat, uid, post, pid, seeded):
                     added += 1
             counts[f'{platform}@{path}'] = added
             logger.info(f"[播种] {platform} {path} 扫到 {n} 条 → 新增指纹 {added}")
@@ -65,16 +68,16 @@ class Seeder:
         logger.info(f"[播种] 完成：共 {total} 条历史指纹（仅学习，不发号）")
         return state
 
-    def _seed_one(self, platform: str, uid: str, post: dict, pid: str) -> bool:
+    def _seed_one(self, platform: str, uid: str, post: dict, pid: str,
+                  seeded: set) -> bool:
         # 抽奖公示等"直接不推"内容（D22）：历史也不播种，与运行时形态一致
         lf = _plat_attr(platform, 'lottery_filtered')
         if lf is not None and lf(post):
             return False
         bucket = f'acct:{platform}:{uid}'
         # 同桶内同 pid 一律跳过（跨代缓存重叠/文本编辑演化都不重播）
-        for rec in self.ledger.buckets.get(bucket, []):
-            if str(rec.get('pid')) == str(pid):
-                return False
+        if (bucket, str(pid)) in seeded:
+            return False
         text = FP.normalize(FP.extract_text(platform, post))
         h = FP.exact_hash(text) if text else ''
         if h:
@@ -85,4 +88,5 @@ class Seeder:
         ts = DedupEngine.publish_ts(platform, post)
         bag = FP.ngram_bags(text) if text else None
         self.engine._store_fingerprint(bucket, platform, pid, uid, ts, h, bag)
+        seeded.add((bucket, str(pid)))
         return True

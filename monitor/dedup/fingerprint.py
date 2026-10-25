@@ -13,8 +13,6 @@ from collections import Counter
 
 from ..core.platform import attr as _plat_attr
 
-from ..core.platform import attr as _plat_attr
-
 # 阈值（spec §2.3 与 §10 预演：真实镜像对最小 0.84，跨日假对 0.81 由窗口隔离）
 FUZZY_THRESHOLD = 0.60
 NEAR_MISS_LOW = 0.40

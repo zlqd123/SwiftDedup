@@ -50,3 +50,6 @@ platforms:
   #   monitor: {check_interval: 3}
   #   storage: {cache_dir: ./data/<平台名>/cache}
   #   watchlist: {file: ./data/<平台名>/watchlist.json}
+  # weibo 专属调试开关（monitor 小节）：
+  #   archive_other: true   # 归档全部 xhr/fetch 响应到 data/weibo/responses/
+  #                          # （默认仅归档关键接口：feed/push_count/log 等）

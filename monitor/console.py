@@ -22,8 +22,6 @@ import shutil
 from .core.platform import (names as _plat_names, has as _plat_has,
                             attr as _plat_attr, display_name as _plat_display)
 
-from .core.platform import (names as _plat_names, has as _plat_has,
-                            attr as _plat_attr, display_name as _plat_display)
 import asyncio
 import time
 import webbrowser
@@ -186,12 +184,14 @@ class Console:
         if not cookies:
             return self._manual_page('没有可复用的登录 Cookie',
                 '请先在「登录扫码」完成该平台登录，再来操作账号。')
-        asyncio.create_task(self._launch_manual(platform, cookies))
+        asyncio.create_task(self._launch_manual(platform, open_url, cookies))
         return self._manual_page('浏览器启动中…',
             f'正在有头模式打开 {open_url}（复用 {len(cookies)} 个 Cookie）。'
             '窗口未弹出时查看主控制台日志。')
 
-    async def _launch_manual(self, platform: str, cookies: list):
+    async def _launch_manual(self, platform: str, open_url: str, cookies: list):
+        pw = None
+        browser = None
         try:
             prev = getattr(self, '_manual_refs', {}).pop(platform, None)
             if prev:
@@ -208,17 +208,45 @@ class Console:
             ctx = await browser.new_context(viewport={"width": 1280, "height": 900})
             await ctx.add_cookies(cookies)
             page = await ctx.new_page()
-            await page.goto(open_url, wait_until='domcontentloaded')
             if not hasattr(self, '_manual_refs'):
                 self._manual_refs = {}
+            # 先登记再导航：中途异常也能被下一次打开/停机清理（曾因 NameError 每次点击泄漏一套进程）
             self._manual_refs[platform] = (pw, browser)
+
             def _gone(*_):
-                try: self._manual_refs.pop(platform, None)
-                except Exception: pass
+                try:
+                    self._manual_refs.pop(platform, None)
+                except Exception:
+                    pass
+                # 用户关窗后驱动进程不会自退，必须显式 stop，否则泄漏 node driver
+                try:
+                    asyncio.get_event_loop().create_task(self._stop_pw(pw))
+                except Exception:
+                    pass
             browser.on('disconnected', _gone)
+            await page.goto(open_url, wait_until='domcontentloaded')
             logger.info(f"[操作账号] 已打开 {platform} 有头浏览器: {open_url}")
         except Exception as e:
             logger.error(f"[操作账号] {platform} 启动失败: {e}")
+            # 失败兜底收尾：不留孤儿 chromium/driver
+            try:
+                if browser is not None:
+                    await browser.close()
+            except Exception:
+                pass
+            try:
+                if pw is not None:
+                    await pw.stop()
+            except Exception:
+                pass
+            getattr(self, '_manual_refs', {}).pop(platform, None)
+
+    @staticmethod
+    async def _stop_pw(pw):
+        try:
+            await pw.stop()
+        except Exception:
+            pass
 
 
     # ---------- 配置页 ----------

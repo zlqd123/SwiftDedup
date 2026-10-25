@@ -49,7 +49,14 @@ class SourceRegistry:
         return True
 
     def reload(self):
-        """sources.yaml + sources.json 双层合并（两层并存，manual 不被运行态覆盖）"""
+        """sources.yaml + sources.json 双层合并
+
+        合并规则（修复：UI 改动必须对 yaml 定义的信源也生效，且重启不回弹）：
+        - 运行层按**平台级列表**覆盖 yaml：某平台 key 出现在运行层记录（含显式空
+          列表，表达"从 yaml 移除该平台全部账号"）即以运行层为准；
+        - 运行层墓碑（deleted: true）屏蔽 yaml 里已被 UI 删除的信源；
+        - 未被运行层触碰的平台/字段继续跟随 sources.yaml 编辑（yaml 仍是权威底稿）。
+        """
         self._sources, self._index = {}, {}
         self._unclaimed = {p: [] for p in _plat_names()}
 
@@ -67,21 +74,30 @@ class SourceRegistry:
             except Exception as e:
                 logger.error(f"sources.yaml 解析失败: {e}")
 
+        tombstones = set()
         if self.runtime_path.exists():
             try:
                 self._runtime = json.loads(self.runtime_path.read_text(encoding='utf-8'))
-                entries.extend(('runtime', x) for x in (self._runtime.get('sources') or []))
-                un = (self._runtime.get('unclaimed') or {})
-                for p in _plat_names():
-                    for uid in (un.get(p) or []):
-                        self._unclaimed[p].append({'uid': str(uid), 'from': 'runtime'})
             except Exception as e:
                 logger.error(f"sources.json 解析失败: {e}")
+                self._runtime = {'sources': []}
+            for x in (self._runtime.get('sources') or []):
+                if (x or {}).get('deleted'):
+                    try:
+                        tombstones.add(int(x.get('id')))
+                    except (TypeError, ValueError):
+                        continue
+                entries.append(('runtime', x))
+            # 运行层待认领（解绑/删信源回列的账号，跨重启保留）
+            un = (self._runtime.get('unclaimed') or {})
+            for p in _plat_names():
+                for uid in (un.get(p) or []):
+                    self._unclaimed[p].append({'uid': str(uid), 'from': 'runtime'})
 
-        # 运行期条目优先（同 sid 覆盖 yaml 草案），未填 sid/name 的跳过
         seen = {}
         for layer, entry in entries:
-            sid_raw = str((entry or {}).get('id') or '').strip()
+            entry = entry or {}
+            sid_raw = str(entry.get('id') or '').strip()
             if not sid_raw:
                 continue
             try:
@@ -89,7 +105,9 @@ class SourceRegistry:
             except ValueError:
                 logger.warning(f"信源 id '{sid_raw}' 非数字，忽略")
                 continue
-            name = str((entry or {}).get('name') or '').strip()
+            if sid in tombstones:
+                continue
+            name = str(entry.get('name') or '').strip()
             accounts = entry.get('accounts') or {}
             # 以已知平台名为准归一化；未知平台 key 一并保留 —— 否则"平台插件
             # 尚未 import 的进程"(离线探针/工具脚本)会静默丢失整组账号映射。
@@ -100,25 +118,26 @@ class SourceRegistry:
                     u = str(u).strip()
                     if u:
                         uids.append(u)
-                if uids:
+                # 运行层保留显式空列表（表达"从 yaml 移除该平台全部账号"）
+                if uids or layer == 'runtime':
                     normalized[p] = uids
             if not normalized and layer != 'runtime':
                 # 手写 yaml 里无账号的空占位跳过；运行层(UI 新建、尚未绑账号)必须保留
                 continue
             rec = {'sid': sid, 'name': name or f'信源{sid}', 'accounts': normalized,
                    'dedup': bool(entry.get('dedup', True))}
-            if sid in seen:                           # 后者覆盖前者（runtime 优先）
-                rec = {**seen[sid], 'accounts': {**seen[sid].get('accounts', {}), **normalized}}
-                rec['dedup'] = rec.get('dedup', True)  # runtime 层覆盖 yaml 层（rec 已含上层值）
-                if layer == 'runtime':
-                    rec['dedup'] = bool(entry.get('dedup', True))
+            if sid in seen:                           # 运行层覆盖 yaml（平台级列表）
+                prev = seen[sid]
+                rec = {**prev, 'accounts': {**prev.get('accounts', {}), **normalized}}
+                if name:
+                    rec['name'] = name
+                # dedup 只有运行层显式给出才覆盖（运行层记录现在总是带该字段）
+                if layer == 'runtime' and 'dedup' in entry:
+                    rec['dedup'] = bool(entry.get('dedup'))
             seen[sid] = rec
-        runtime_now = [{'id': sid, 'name': rec['name'],
-                        'accounts': rec['accounts'],
-                        'dedup': rec.get('dedup', True)} for sid, rec in seen.items()]
-        if (self._runtime.get('sources') or []) != runtime_now:
-            self._runtime['sources'] = runtime_now
-            self._persist_runtime()
+        # 合并后收敛：显式空列表最终表示"该平台无账号"
+        for rec in seen.values():
+            rec['accounts'] = {p: u for p, u in rec['accounts'].items() if u}
         for sid, rec in seen.items():
             self._sources[sid] = rec
 
@@ -126,7 +145,12 @@ class SourceRegistry:
         for sid, rec in self._sources.items():
             for p, uids in rec['accounts'].items():
                 for uid in uids:
-                    self._index[(p, uid)] = sid
+                    key = (p, uid)
+                    if key in self._index and self._index[key] != sid:
+                        logger.warning(f"[信源] 账号 {p}/{uid} 同时定义在信源 "
+                                       f"{self._index[key]} 与 {sid}，以先者为准")
+                        continue
+                    self._index[key] = sid
 
         # 待认领去重
         for p in _plat_names():
@@ -176,17 +200,12 @@ class SourceRegistry:
         return bool(rec.get('dedup', True)) if rec else False
 
     def set_dedup(self, sid, flag: bool) -> bool:
-        """设置信源级判重开关并持久化（runtime 层）；不影响其它信源"""
+        """设置信源级判重开关并持久化（运行层）；不影响其它信源"""
         rec = self._sources.get(int(sid))
         if not rec:
             return False
         rec['dedup'] = bool(flag)
-        self._runtime['sources'] = [r for r in (self._runtime.get('sources') or [])
-                                    if r.get('id') != int(sid)]
-        self._runtime['sources'].append({'id': int(sid), 'name': rec['name'],
-                                         'accounts': dict(rec['accounts']),
-                                         'dedup': bool(flag)})
-        self._persist_runtime()
+        self._runtime_override(sid, None)
         return True
 
     def next_free_sid(self) -> int:
@@ -199,54 +218,66 @@ class SourceRegistry:
 
     # ---------- 变更（运行期，持久化到 sources.json） ----------
 
+    def _runtime_override(self, sid, platform):
+        """把一次 UI 变更写入运行层（sources.json）。
+
+        只覆盖被触碰的平台级列表 / 信源级字段（name、dedup），未触碰的继续跟随
+        sources.yaml —— 运行层显式空列表表示"从 yaml 移除该平台全部账号"，
+        由此换源/解绑/删除对 yaml 定义的信源同样生效且重启不回弹。"""
+        sid = int(sid)
+        rec = self._sources.get(sid)
+        entry = next((r for r in (self._runtime.get('sources') or [])
+                      if r.get('id') == sid and not r.get('deleted')), None)
+        if entry is None:
+            entry = {'id': sid,
+                     'name': (rec or {}).get('name') or f'信源{sid}',
+                     'accounts': {},
+                     'dedup': bool((rec or {}).get('dedup', True))}
+            self._runtime.setdefault('sources', []).append(entry)
+        if platform is not None:
+            cur = list(((rec or {}).get('accounts') or {}).get(platform) or [])
+            entry['accounts'][platform] = cur
+        elif rec is not None:
+            entry['name'] = rec.get('name') or entry.get('name') or f'信源{sid}'
+            entry['dedup'] = bool(rec.get('dedup', True))
+        self._persist_runtime()
+
     def _persist_runtime(self):
+        # 待认领随每次变更同步落盘（解绑/删信源回列的账号跨重启保留）
+        self._runtime['unclaimed'] = {p: sorted({r['uid'] for r in v})
+                                      for p, v in self._unclaimed.items() if v}
         self.runtime_path.parent.mkdir(parents=True, exist_ok=True)
-        # 兜底：与盘上现版本按 sid 做 accounts union —— 任何一侧多出的账号都保留，
-        # 杜绝"读到空映射→写回空映射"的自毁（reload 已归一化保留全部平台）。
-        try:
-            prev = json.loads(self.runtime_path.read_text(encoding='utf-8'))
-            prev_by_id = {int(r['id']): r for r in (prev.get('sources') or []) if r.get('id')}
-            for r in (self._runtime.get('sources') or []):
-                old = (prev_by_id.get(int(r['id'])) or {}).get('accounts') or {}
-                new = r.get('accounts') or {}
-                for p, uids in old.items():
-                    if uids and p not in new:
-                        r['accounts'] = dict(r.get('accounts') or {})
-                        r['accounts'][p] = list(uids)
-                    elif uids and new.get(p) != uids and not set(new.get(p) or []):
-                        r['accounts'][p] = list(uids)
-        except Exception:
-            pass  # 盘上不可读/不存在 → 首次写入
         tmp = self.runtime_path.with_suffix('.tmp')
         tmp.write_text(json.dumps(self._runtime, ensure_ascii=False, indent=2), encoding='utf-8')
         tmp.replace(self.runtime_path)
 
     def upsert_link(self, platform: str, uid: str, sid: int) -> bool:
-        """把账号挂到信源（允许同平台多号）；sid 不存在则要求先建源"""
+        """把账号挂到信源（允许同平台多号）；sid 不存在则要求先建源。
+        换源会把新旧两个信源的平台级列表都写入运行层，重启不回弹。"""
         platform, uid, sid = platform, str(uid), int(sid)
         if not self.has_sid(sid):
             return False
         # 从其它信源/待认领移出
-        for other in self._sources.values():
-            lst = other['accounts'].get(platform) or []
-            if uid in lst:
-                lst.remove(uid)
+        old_sid = self._index.get((platform, uid))
+        if old_sid is not None and old_sid != sid:
+            other = self._sources.get(old_sid)
+            if other is not None:
+                lst = other['accounts'].get(platform) or []
+                if uid in lst:
+                    lst.remove(uid)
         self._sources[sid]['accounts'].setdefault(platform, [])
         if uid not in self._sources[sid]['accounts'][platform]:
             self._sources[sid]['accounts'][platform].append(uid)
-        self._unclaimed.setdefault(platform, [])
-        self._unclaimed.setdefault(platform, [])
-        self._unclaimed[platform] = [r for r in self._unclaimed[platform] if r['uid'] != uid]
-        self._runtime['sources'] = [r for r in (self._runtime.get('sources') or [])
-                                    if r.get('id') != sid]
-        self._runtime['sources'].append({'id': sid,
-                                         'name': self._sources[sid]['name'],
-                                         'accounts': dict(self._sources[sid]['accounts'])})
+        self._unclaimed[platform] = [r for r in self._unclaimed.get(platform, [])
+                                     if r['uid'] != uid]
+        self._runtime_override(sid, platform)
+        if old_sid is not None and old_sid != sid:
+            self._runtime_override(old_sid, platform)
         self._index[(platform, uid)] = sid
-        self._persist_runtime()
         return True
 
     def unlink(self, platform: str, uid: str, sid: int) -> bool:
+        """解绑账号。运行层写入显式（可能为空的）平台列表 —— yaml 定义的账号移除同样生效。"""
         platform, uid, sid = platform, str(uid), int(sid)
         rec = self._sources.get(sid)
         if not rec:
@@ -255,13 +286,9 @@ class SourceRegistry:
         if uid not in lst:
             return False
         lst.remove(uid)
-        self._runtime['sources'] = [r for r in (self._runtime.get('sources') or [])
-                                    if r.get('id') != sid]
-        self._runtime['sources'].append({'id': sid, 'name': rec['name'],
-                                         'accounts': dict(rec['accounts'])})
         self._index.pop((platform, uid), None)
         self._unclaimed.setdefault(platform, []).append({'uid': uid, 'from': 'runtime'})
-        self._persist_runtime()
+        self._runtime_override(sid, platform)   # 落盘时同步带上待认领列表
         return True
 
     def create_source(self, sid: Optional[int] = None, name: str = '') -> int:
@@ -271,12 +298,14 @@ class SourceRegistry:
             raise ValueError(f'sid {sid} 已存在')
         rec = {'sid': sid, 'name': name or f'信源{sid}', 'accounts': {}}
         self._sources[sid] = rec
-        self._runtime['sources'].append({'id': sid, 'name': rec['name'], 'accounts': {}})
+        self._runtime.setdefault('sources', []).append(
+            {'id': sid, 'name': rec['name'], 'accounts': {}, 'dedup': True})
         self._persist_runtime()
         return sid
 
     def delete_source(self, sid: int) -> bool:
-        """删除信源（运行层）；其下已关联账号回到待认领。自动号段不回收。"""
+        """删除信源；其下已关联账号回到待认领。自动号段不回收。
+        运行层写墓碑（deleted）：yaml 定义的信源删除后重启不再复活。"""
         rec = self._sources.get(int(sid))
         if not rec:
             return False
@@ -286,7 +315,8 @@ class SourceRegistry:
                 self._unclaimed.setdefault(p, []).append({'uid': u, 'from': 'runtime'})
         del self._sources[int(sid)]
         self._runtime['sources'] = [r for r in (self._runtime.get('sources') or [])
-                                    if r.get('id') != sid]
+                                    if r.get('id') != int(sid)]
+        self._runtime['sources'].append({'id': int(sid), 'deleted': True})
         self._persist_runtime()
         return True
 
@@ -295,9 +325,5 @@ class SourceRegistry:
         if not rec:
             return False
         rec['name'] = name
-        self._runtime['sources'] = [r for r in (self._runtime.get('sources') or [])
-                                    if r.get('id') != int(sid)]
-        self._runtime['sources'].append({'id': int(sid), 'name': name,
-                                         'accounts': dict(rec['accounts'])})
-        self._persist_runtime()
+        self._runtime_override(sid, None)
         return True

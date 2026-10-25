@@ -18,6 +18,7 @@ import asyncio
 import os
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -228,15 +229,24 @@ class SwiftDedupApp:
                 logger.info(f"🗓 每日维护重启已启用 "
                             f"(窗口 {self.scheduler._window_start}:00-{self.scheduler._window_end}:00)")
 
-            # 7. 维护调度循环（ tick 每 20 秒一次，含投票顺延）
+            # 7. 主循环：1 秒粒度（Ctrl+C 后 1s 内进入收尾，不再等 20s）；
+            #    维持 20s 一次维护 tick，并周期落盘账本 / 冲未关联批量日志
             logger.info("系统运行中... 按 Ctrl+C 停止")
+            last_maint = 0.0
             while self.is_running:
                 try:
-                    if self.scheduler:
-                        await self.scheduler.tick()
+                    now = time.monotonic()
+                    if now - last_maint >= 20:
+                        last_maint = now
+                        if self.scheduler:
+                            await self.scheduler.tick()
+                    if self.ledger:
+                        self.ledger.flush()
+                    if self.engine:
+                        self.engine.flush_unclaimed_if_stale()
                 except Exception as e:
-                    logger.error(f"维护调度异常: {e}")
-                await asyncio.sleep(20)
+                    logger.error(f"主循环维护任务异常: {e}")
+                await asyncio.sleep(1)
         except Exception as e:
             logger.exception(f"运行异常: {e}")
         finally:
@@ -269,6 +279,11 @@ class SwiftDedupApp:
                 await asyncio.wait_for(svc.stop(), timeout=10)
             except Exception as e:
                 logger.warning(f"平台 {name} 收尾超时/异常: {e}")
+        if self.ledger:
+            try:
+                self.ledger.flush(force=True)   # 节流写盘的兜底：退出前强制落账
+            except Exception as e:
+                logger.warning(f"账本落盘失败: {e}")
         if self.api:
             try:
                 await asyncio.wait_for(self.api.stop(), timeout=10)
@@ -283,6 +298,9 @@ class SwiftDedupApp:
 
 
 async def main():
+    # 所有相对路径（./data/...、sources.yaml、config.yaml）统一锚定到项目根：
+    # 无论从哪个目录启动，都落到同一套数据目录
+    os.chdir(Path(__file__).resolve().parent)
     await SwiftDedupApp("config.yaml").start()
 
 
