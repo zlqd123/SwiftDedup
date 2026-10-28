@@ -35,6 +35,8 @@ dedup:
   fuzzy_threshold: 0.6
   window_hours: 1
   near_miss_low: 0.4
+  sync_burst_window: 60   # 同步突发兜底(秒)：同池其它平台刚发过号且双方数量相等时，
+                          # 后到平台按重复处理（应对多平台同视频不同文案；0=关闭）
   tail_note: true
   sources_file: sources.yaml
   data_dir: ./data/dedup

@@ -234,6 +234,61 @@ def test_log_ring(tmp: Path):
     check('重启后 ring 预填充', len(led2.read_log(10)) == 10)
 
 
+async def test_burst_and_video(tmp: Path):
+    print('[6] B站视频简介并入指纹 + 同步突发兜底')
+    tmp.mkdir(parents=True, exist_ok=True)
+    root = Path(__file__).resolve().parents[1]
+    if (root / 'platform' / 'plugin.py').exists():
+        from monitor.core.platform import load_plugins
+        load_plugins(root / 'platform')
+        from sdplat.bili.browser import BrowserManager
+        parse_feed_item = BrowserManager.parse_feed_item
+        item = {
+            "id_str": "1263452367722905618", "type": "DYNAMIC_TYPE_AV",
+            "modules": {
+                "module_author": {"mid": 161775300, "name": "明日方舟", "pub_ts": 1},
+                "module_dynamic": {"desc": {"text": ""},
+                    "major": {"archive": {"bvid": "BV1test",
+                                           "title": "一分（多）钟看泰拉#5",
+                                           "desc": "一包动物饼干的时间了解一个泰拉知识，关注我的频道。",
+                                           "cover": "https://i0.hdslb.com/x.jpg"}}},
+                "module_stat": {}}}
+        d = parse_feed_item(item)
+        check('视频简介并入 content', '一包动物饼干' in (d.get('content') or ''),
+              repr(d.get('content')))
+        check('视频标题保留在 title', d.get('title') == '一分（多）钟看泰拉#5')
+    else:
+        print('  - 跳过视频简介用例（未安装插件仓）')
+
+    yml = tmp / 'b9.yaml'
+    yml.write_text('sources: []' + chr(10), encoding='utf-8')
+    reg = SourceRegistry(str(yml), str(tmp / 'breg'))
+    reg.create_source(sid=9, name='池九')
+    reg.upsert_link('weibo', 'u9', 9)
+    reg.upsert_link('bili', 'b9', 9)
+    led = Ledger(str(tmp / 'bdedup'))
+    cfg = SimpleNamespace(dedup={'enabled': True, 'fuzzy_threshold': 0.6,
+                                 'window_hours': 1.0, 'near_miss_low': 0.4,
+                                 'sync_burst_window': 60})
+    eng = DedupEngine(cfg, reg, led)
+    eng.publish_ts = lambda platform, post: float(post['ts'])
+
+    def mk(pid, ts_, body):
+        return {'id': pid, 'idstr': pid, 'ts': ts_, 'text_raw': body, 'content': body}
+
+    base = time.time()
+    r1 = await eng.ingest('weibo', 'u9', mk('x1', base, '甲平台发布的完全不同的内容甲'))
+    check('突发兜底前首发 canonical', r1['decision'] == 'canonical', str(r1))
+    r2 = await eng.ingest('bili', 'b9', mk('x2', base + 26, 'totally different text 乙'))
+    check('60s 内跨平台同量 → sync_burst 跳过', r2['decision'] == 'duplicate'
+          and r2['reason'] == 'sync_burst', str(r2))
+    rec = led.get_alias('bili', 'x2')
+    check('dup_of 指向先发平台 canonical', (rec.get('dup_of') or {}).get('pid') == 'x1',
+          str(rec.get('dup_of')))
+    r3 = await eng.ingest('bili', 'b9', mk('x3', base + 3600, '丙 另一段独立内容丙'))
+    check('窗口外不受影响', r3['decision'] == 'canonical', str(r3))
+
+
 async def main():
     tmp = Path(tempfile.mkdtemp(prefix='sd_test_'))
     try:
@@ -242,6 +297,7 @@ async def main():
         test_ledger_indexes(tmp / '3')
         await test_engine(tmp / '4')
         test_log_ring(tmp / '5')
+        await test_burst_and_video(tmp / '6')
         print(f'\n全部通过：{len(PASS)} 项断言')
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

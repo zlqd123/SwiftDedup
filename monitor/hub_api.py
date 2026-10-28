@@ -29,6 +29,9 @@ class HubAPIServer:
                                          f'http://{self.host}:{self.port}')
         self.app: Optional[web.Application] = None
         self.runner: Optional[web.AppRunner] = None
+        self.site: Optional[web.TCPSite] = None
+        self.bind_retries = int(config.api.get('bind_retries', 3))
+        self.bind_interval = float(config.api.get('bind_interval', 5))
         self.services = []      # [PlatformBackend]，由 main 注册
         self.registrars = []    # 额外路由注册方（如 SDHub），回调 fn(app)
         self._log_silencer = config.logging.get('console_level', 'INFO') != 'DEBUG'
@@ -56,12 +59,40 @@ class HubAPIServer:
                 logger.exception(f"扩展路由注册失败: {e}")
         self.runner = web.AppRunner(self.app)
         await self.runner.setup()
-        site = web.TCPSite(self.runner, self.host, self.port)
-        await site.start()
+        # 方案 B：绑定重试。main.py 的启动预检已经把绝大多数冲突挡在浏览器启动之前，
+        # 这里只兜「预检通过后旧实例才彻底退出」这种极小概率的竞态。
+        for attempt in range(1, self.bind_retries + 1):
+            site = web.TCPSite(self.runner, self.host, self.port)
+            try:
+                await site.start()
+                self.site = site
+                break
+            except OSError as e:
+                in_use = (getattr(e, 'winerror', None) == 10048
+                          or getattr(e, 'errno', None) in (98, 100, 10048))
+                if not in_use or attempt >= self.bind_retries:
+                    raise
+                wait = int(self.bind_interval)
+                logger.warning(f"端口 {self.port} 仍被占用，{wait}s 后重试 "
+                               f"[{attempt}/{self.bind_retries}]：{e}")
+                await asyncio.sleep(self.bind_interval)
         routes = "、".join(f"/ui/{svc.name}/" for svc in self.services) + "、/ui/sd/"
         logger.info(f"API 服务启动: http://{self.host}:{self.port}（面板: {routes}）")
 
+    async def stop_listener(self):
+        """先关监听套接字：端口立刻可被新实例绑定，剩余收尾慢慢来"""
+        site, self.site = self.site, None
+        if site is None:
+            return
+        try:
+            await asyncio.wait_for(site.stop(), timeout=3)
+            logger.info(f"API 监听已关闭，端口 {self.port} 已释放")
+        except Exception as e:
+            logger.debug(f"关闭监听失败: {e}")
+
     async def stop(self):
+        # 双保险：监听没关就再关一次（正常路径在 main.stop() 一开始就关了）
+        await self.stop_listener()
         # 先主动断开各平台 dashboard 的 SSE 长连接（否则 runner.cleanup() 会被
         # events_stream 拖住，需先主动断开）
         for svc in self.services:
@@ -73,7 +104,7 @@ class HubAPIServer:
                     pass
         if self.runner:
             try:
-                await asyncio.wait_for(self.runner.cleanup(), timeout=8)
+                await asyncio.wait_for(self.runner.cleanup(), timeout=5)
             except Exception as e:
                 logger.debug(f"API runner 清理超时（遗留连接会被 OS 回收）: {e}")
         logger.info("API 服务已停止")

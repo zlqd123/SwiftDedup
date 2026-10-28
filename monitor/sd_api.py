@@ -42,6 +42,22 @@ def _img_urls(platform, post, base) -> List[str]:
         return []
 
 
+def _avatar_url(platform, post, base) -> str:
+    """作者头像地址：构造在平台插件的 avatar_url hook。
+
+    聚合条目本身是扁平结构（没有整份 user 对象），头像只能在这里由平台插件
+    决定怎么给：微博给的是本地端点 /data/weibo/avatar/{uid}，抓取阶段已落盘。
+    """
+    fn = _plat_attr(platform, 'avatar_url')
+    if fn is None:
+        return ((post or {}).get('user') or {}).get('avatar') or ''
+    try:
+        return fn(post or {}, base) or ''
+    except Exception as e:
+        logger.warning(f'[sd] 头像地址构造失败 {platform}: {e!r}')
+        return ''
+
+
 def _forward_note(platform, post) -> str:
     """转发帖补引摘（无则空串）"""
     fn = _plat_attr(platform, 'forward_note')
@@ -188,7 +204,11 @@ class SDHub:
             'platform_name': _plat_display(platform),
             'pid': pid, 'uid': uid,
             'author': author,
+            'avatar': _avatar_url(platform, post, self.external_base_url),
             'text': text,
+            # 文章/图文：title 是标题（卡片只发它），kind 告诉下游这是长文
+            'title': (post or {}).get('title') or '',
+            'kind': (post or {}).get('kind') or 'normal',
             'images': imgs,
             'link': link,
             'ts': rec.get('t'),
@@ -832,7 +852,7 @@ const KIND_CN = {dup:'重复', duplicate:'重复', canonical:'主帖', exact:'�
   near_miss:'近失', unclaimed:'未关联', released:'放行', mode:'模式',
   seed_done:'播种完成', fingerprint:'指纹', known:'已见过', empty_text:'无文字',
   skipped_lottery:'抽奖跳过', skipped_empty_forward:'空转发跳过'};
-const REASON_CN = {exact:'精确', fuzzy:'模糊', lottery:'抽奖', window:'时间窗'};
+const REASON_CN = {exact:'精确', fuzzy:'模糊', lottery:'抽奖', window:'时间窗', sync_burst:'同步兜底'};
 const KIND_LV = {canonical:'INFO', dup:'INFO', exact:'INFO', near_miss:'WARNING',
   unclaimed:'INFO', released:'INFO', mode:'INFO', seed_done:'INFO', fingerprint:'DEBUG'};
 const MODE_CN2 = {shadow:'影子(观察)', enforce:'执行(强制)'};

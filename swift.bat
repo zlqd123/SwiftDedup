@@ -1,5 +1,7 @@
 @echo off
-REM SwiftDedup 一键启动 (Windows, 默认 shell 档)
+REM SwiftDedup launcher (Windows, default shell profile) - live console output
+REM NOTE: keep ASCII-only (cmd parses .bat in ANSI codepage; UTF-8 breaks it)
+
 cd /d %~dp0
 python main.py
 pause

@@ -9,6 +9,9 @@
   1. 未关联账号 → 指纹入挂起桶（acct:{platform}:{uid}），待关联后自动入池
   2. 同池内逐字哈希命中 → 逐字级重复（无时间限制；跨池永不比较，§2.3）
   3. 信源池内 模糊判重：同自然日(或|Δ|≤4h) 且 包含率≥0.60；0.40~0.60 记近失（影子盯防）
+  3.5 同步突发兜底(sync_burst)：同池其它平台 burst 窗口内已发号且发号数相等
+     → 后到平台按重复处理（运营经验规则：多平台同步发布时文案可能完全不同，
+     如 B站视频只有栏目名、微博是推广语，文本判重必然漏）
   4. 通过 → canonical：领聚合动态号（sid+日期+序号，重复帖不领号）
 
 信源级 dedup 开关：每个信源可独立开/关（sources.yaml `dedup` 字段 / 面板信源卡）。
@@ -16,6 +19,7 @@
 """
 
 import time
+from collections import deque
 from datetime import datetime, timedelta
 from typing import Dict, Optional
 
@@ -69,12 +73,15 @@ class DedupEngine:
         self._unc_pending: dict = {}
         self._unc_first: float = 0.0
         self._unc_flushed_once: bool = False
+        # 同步突发兜底：窗口内同池各平台 canonical 发号计数（内存态，重启清零）
+        self.burst_window = float(dd.get('sync_burst_window', 60))
+        self._canon_window: Dict[int, deque] = {}   # sid -> [(t, platform, rec)]
 
     @staticmethod
     def _default_cfg():
         return {'fuzzy_threshold': FP.FUZZY_THRESHOLD,
                 'window_hours': 1.0, 'near_miss_low': FP.NEAR_MISS_LOW,
-                'enabled': True}
+                'sync_burst_window': 60, 'enabled': True}
 
     # ---------- 状态 ----------
 
@@ -173,6 +180,12 @@ class DedupEngine:
             score = hit['score']
             return self._duplicate(platform, pid, uid, ts, post, sid=sid,
                                    against=hit['rec'], reason='fuzzy', score=score)
+        # 3.5 同步突发兜底（sync_burst_window<=0 关闭）
+        if self.burst_window > 0:
+            burst = self._burst_hit(sid, platform, ts)
+            if burst is not None:
+                return self._duplicate(platform, pid, uid, ts, post, sid=sid,
+                                       against=burst, reason='sync_burst', score=1.0)
         # 近失段由 _fuzzy_find 内部记账（影子期校准用，不算重复）
         return self._canonical(platform, pid, uid, post, ts, sid=sid, h=h, bag=bag)
 
@@ -203,6 +216,29 @@ class DedupEngine:
                       new_platform=platform, new_pid=pid, post=post)
         return best
 
+    # ---------- 同步突发兜底（sync_burst） ----------
+
+    def _record_canonical(self, sid, platform: str, ts: float, rec: dict):
+        """窗口内 canonical 发号记录（burst 判定的状态源；内存态，重启清零）"""
+        dq = self._canon_window.setdefault(int(sid), deque())
+        dq.append((ts, platform, rec))
+        while dq and ts - dq[0][0] > self.burst_window:
+            dq.popleft()
+
+    def _burst_hit(self, sid, platform: str, ts: float) -> Optional[dict]:
+        """同池其它平台在 burst 窗口内已发号、且计入当前帖后各平台发号数相等
+        → 返回作为 dup_of 的最近一条其它平台 canonical；否则 None"""
+        dq = self._canon_window.get(int(sid))
+        if not dq:
+            return None
+        while dq and ts - dq[0][0] > self.burst_window:
+            dq.popleft()
+        others = [(t, p, rec) for (t, p, rec) in dq if p != platform]
+        mine = len(dq) - len(others)
+        if others and mine + 1 == len(others):
+            return others[-1][2]
+        return None
+
     def _canonical(self, platform: str, pid: str, uid: str, post: dict, ts: float, *,
                    sid: Optional[int] = None, h: str = '', bag=None) -> dict:
         """新帖 canonical：必领聚合动态号（重复帖不领号，spec D6/D17）。
@@ -216,6 +252,7 @@ class DedupEngine:
         self.ledger.put_alias(platform, pid, rec)
         self._store_fingerprint(f'sid:{sid}', platform, pid, uid, ts, h, bag)
         self._log(platform, pid, uid, ts, 'canonical', sid=sid, aid=aid, post=post)
+        self._record_canonical(sid, platform, ts, rec)
         return {'decision': 'canonical', 'sid': str(sid), 'aid': aid}
 
     def _duplicate(self, platform: str, pid: str, uid: str, ts: float, post: dict,
